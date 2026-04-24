@@ -1,0 +1,117 @@
+1) Description on code fix:  
+The defect QEA-747 (“User deletion not working”) indicates that deleting a user from the admin/delete-users screen does not fully remove the user across the application and the deleted user may still be able to log in. However, the provided code does not include any of the actual deletion workflow (admin UI component/service), server deletion endpoint, repository/DB logic, or authentication/login logic—so a direct functional fix (e.g., ensuring the DELETE API hard/soft deletes properly and login rejects deleted users) cannot be recommended based on code that is actually provided.
+
+Given the RCA context supplied (code issue vs configuration, but insufficient data) and the only available snippets (server `tsconfig.json` fragment and Angular `index.html`), the only implementable fixes we can recommend are configuration/shell fixes that can plausibly cause inconsistent behavior across screens/environments (e.g., server not building/running the intended code, or client routing/assets/styles loading incorrectly). These can manifest as “delete seems to work in one view but not others” (stale bundle/wrong routing) or “login still works” (server running an outdated build or wrong compiled output).  
+
+Specifically, the analysis found:  
+- Invalid/fragile JSON in `server/tsconfig.json`: a trailing comma after the `types` array. Strict JSON parsers reject this; some build tools may fail, skip, or fall back to defaults. This can lead to the server running incorrect or stale build artifacts, meaning the deletion endpoint/auth logic you think you deployed might not actually be what’s running.  
+- Potential Angular deployment base-href mismatch: `<base href="/">` is correct only if the app is hosted at root. If deployed under a sub-path, routing and asset loading can break (including CSS). While this more directly relates to the UI overlap issue mentioned in the RCA, it can also cause admin navigation or bundle loading issues that appear as broken admin operations.
+
+These fixes address the configuration-related root-cause category from the RCA by removing build ambiguity and preventing inconsistent runtime behavior due to misconfiguration. They do not replace the need to fix the actual delete/auth code; they are the only fixes possible from the code provided.
+
+2) Code fix:  
+
+Existing Code:  
+
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ],
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}
+
+
+New Code with Fix:  
+
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+    // FIX: removed trailing comma after the "types" property to keep valid JSON
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}
+
+
+Changes Made:  
+- Removed the trailing comma after `"types": ["node"]` to ensure the `tsconfig.json` is valid JSON and is parsed consistently across all tooling (tsc/ts-node/jest/build pipelines).  
+- (No other functional changes are possible from the provided snippet.)
+
+---
+
+Existing Code:  
+html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QEA</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
+
+
+New Code with Fix:  
+html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QEA</title>
+
+  <!-- NOTE: Keep "/" only if deployed at domain root.
+       If deployed under a sub-path (e.g., https://host/qea/), this MUST match,
+       otherwise routes/assets (including CSS) may not load correctly. -->
+  <base href="/"><!-- CONFIG REVIEW REQUIRED: verify deployment context path -->
+
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
+
+
+Changes Made:  
+- No code-behavior change possible without deployment context; added an explicit in-code note to force validation of base-href against the actual deployment path (prevents “works in one env/screen but not another” issues caused by wrong asset/routing base).  
+
+---
+
+Relevant Code NOT Found  
+The following code is required to implement a real fix for “User deletion not working”, but it was not provided, so no direct before/after patch can be produced for the actual defect behavior:  
+- Client: Admin/Delete Users screen component (e.g., `DeleteUsersComponent`), user list/search component, and the service method that calls delete (e.g., `UserService.deleteUser(userId)`), plus any state management that refreshes other screens.  
+- Server: user deletion API route/controller (e.g., `DELETE /users/:id`), user repository/DB deletion logic (hard delete vs soft delete), and authentication/login logic that must reject deleted/disabled users.  
+- Any caching/session invalidation logic to ensure deleted users cannot continue using existing sessions/tokens.
+
+3) Other Relevant details:  
+- Testing recommendations (config/build focused):  
+  - Run server build in CI/local using the exact same tooling used in production (tsc/ts-node/jest) and ensure `server/tsconfig.json` is parsed without warnings/errors.  
+  - Perform a clean build/deploy (delete `dist/`, clear Docker build cache if applicable) to ensure no stale server artifact is being executed.  
+  - Validate the server is running the expected build version (commit hash/version endpoint) after deployment to rule out “delete endpoint not actually updated.”  
+
+- Testing recommendations (functional, once relevant code is available):  
+  - API: verify DELETE returns success and the user is not returned by any “list users” endpoints afterwards.  
+  - Auth: verify login fails for deleted user (both new login and existing session/token behavior).  
+  - UI: delete user → confirm all relevant screens refresh/reflect deletion; confirm search results no longer show user.  
+  - Edge cases: deleting currently logged-in user; deleting user with active sessions; concurrent admin sessions.
+
+- Configuration changes (deployment):  
+  - Confirm Angular `baseHref` matches hosting path. If deployed under `/qea/`, set base href accordingly at build time (Angular build option) rather than hardcoding `/`. This prevents broken routing/assets that can cause inconsistent admin behavior and UI degradation.  
+
+- Implementation notes / next required inputs:  
+  - Provide the admin delete screen component/service and server user routes/auth code so a true RCA-aligned fix can be made (e.g., ensure soft-deleted users are excluded from authentication lookup; invalidate sessions; ensure UI refreshes state across screens).
